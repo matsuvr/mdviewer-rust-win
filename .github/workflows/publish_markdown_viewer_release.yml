@@ -16,9 +16,18 @@ jobs:
     env:
       RELEASE_TAG: markdown-viewer-build-${{ github.sha }}
       ASSET_NAME: markdown_viewer-windows-x64.zip
+      CARGO_HOME: C:\c
+      RUSTUP_HOME: C:\r
+      CARGO_TARGET_DIR: D:\t
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure short Windows build paths
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:CARGO_HOME, $env:RUSTUP_HOME, $env:CARGO_TARGET_DIR | Out-Null
+          git config --global core.longpaths true
 
       - name: Build release binary
         run: cargo build -p markdown_viewer --release
