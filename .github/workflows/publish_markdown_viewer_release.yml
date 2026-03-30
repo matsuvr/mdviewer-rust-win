@@ -1,0 +1,55 @@
+name: publish_markdown_viewer_release
+
+on:
+  push:
+    branches:
+      - "copilot/markdown-viewer-release-88fee9f"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: markdown-viewer-build-${{ github.sha }}
+      ASSET_NAME: markdown_viewer-windows-x64.zip
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: cargo build -p markdown_viewer --release
+
+      - name: Package single-binary zip
+        shell: pwsh
+        run: Compress-Archive -Path 'target\release\markdown_viewer.exe' -DestinationPath "target\$env:ASSET_NAME" -Force
+
+      - name: Verify zip contents
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("target\$env:ASSET_NAME")
+          try {
+              $entries = @($zip.Entries | ForEach-Object FullName)
+          } finally {
+              $zip.Dispose()
+          }
+
+          if ($entries.Count -ne 1 -or $entries[0] -ne 'markdown_viewer.exe') {
+              throw "Expected exactly one entry named markdown_viewer.exe, got: $($entries -join ', ')"
+          }
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create $env:RELEASE_TAG "target\$env:ASSET_NAME" --repo "${{ github.repository }}" --target "${{ github.sha }}" --title $env:RELEASE_TAG --notes "Automated markdown_viewer Windows x64 build."
+          } else {
+              gh release upload $env:RELEASE_TAG "target\$env:ASSET_NAME" --repo "${{ github.repository }}" --clobber
+          }

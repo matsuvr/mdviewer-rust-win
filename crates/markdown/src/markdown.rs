@@ -1435,6 +1435,11 @@ impl Element for MarkdownElement {
         } else {
             rems(1.3).to_pixels(window.rem_size())
         };
+        let html_paragraph_line_height = if self.style.height_is_multiple_of_line_height {
+            None
+        } else {
+            Some(default_paragraph_line_height)
+        };
         let rendered_math_by_offset = if render_math {
             parsed_markdown
                 .math_expressions
@@ -1631,7 +1636,13 @@ impl Element for MarkdownElement {
                         MarkdownTag::HtmlBlock => {
                             builder.push_div(div(), range, markdown_end);
                             if let Some(block) = parsed_markdown.html_blocks.get(&range.start) {
-                                self.render_html_block(block, &mut builder, markdown_end, cx);
+                                self.render_html_block(
+                                    block,
+                                    &mut builder,
+                                    markdown_end,
+                                    html_paragraph_line_height,
+                                    cx,
+                                );
                                 handled_html_block = true;
                             }
                         }

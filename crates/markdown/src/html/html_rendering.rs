@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use gpui::{App, FontStyle, FontWeight, StrikethroughStyle, TextStyleRefinement, UnderlineStyle};
+use gpui::{
+    App, FontStyle, FontWeight, Pixels, StrikethroughStyle, TextStyleRefinement, UnderlineStyle,
+};
 use pulldown_cmark::Alignment;
 use ui::prelude::*;
 
@@ -40,6 +42,7 @@ impl MarkdownElement {
         block: &ParsedHtmlBlock,
         builder: &mut MarkdownElementBuilder,
         markdown_end: usize,
+        paragraph_line_height: Option<Pixels>,
         cx: &mut App,
     ) {
         let mut source_allocator = HtmlSourceAllocator::new(block.source_range.clone());
@@ -48,6 +51,7 @@ impl MarkdownElement {
             &mut source_allocator,
             builder,
             markdown_end,
+            paragraph_line_height,
             cx,
         );
     }
@@ -58,10 +62,18 @@ impl MarkdownElement {
         source_allocator: &mut HtmlSourceAllocator,
         builder: &mut MarkdownElementBuilder,
         markdown_end: usize,
+        paragraph_line_height: Option<Pixels>,
         cx: &mut App,
     ) {
         for element in elements {
-            self.render_html_element(element, source_allocator, builder, markdown_end, cx);
+            self.render_html_element(
+                element,
+                source_allocator,
+                builder,
+                markdown_end,
+                paragraph_line_height,
+                cx,
+            );
         }
     }
 
@@ -71,6 +83,7 @@ impl MarkdownElement {
         source_allocator: &mut HtmlSourceAllocator,
         builder: &mut MarkdownElementBuilder,
         markdown_end: usize,
+        paragraph_line_height: Option<Pixels>,
         cx: &mut App,
     ) {
         let Some(source_range) = element.source_range() else {
@@ -79,7 +92,12 @@ impl MarkdownElement {
 
         match element {
             ParsedHtmlElement::Paragraph(paragraph) => {
-                self.push_markdown_paragraph(builder, &source_range, markdown_end);
+                self.push_markdown_paragraph(
+                    builder,
+                    &source_range,
+                    markdown_end,
+                    paragraph_line_height,
+                );
                 self.render_html_paragraph(paragraph, source_allocator, builder, cx, markdown_end);
                 builder.pop_div();
             }
@@ -100,7 +118,14 @@ impl MarkdownElement {
                 self.pop_markdown_heading(builder);
             }
             ParsedHtmlElement::List(list) => {
-                self.render_html_list(list, source_allocator, builder, markdown_end, cx);
+                self.render_html_list(
+                    list,
+                    source_allocator,
+                    builder,
+                    markdown_end,
+                    paragraph_line_height,
+                    cx,
+                );
             }
             ParsedHtmlElement::BlockQuote(block_quote) => {
                 self.push_markdown_block_quote(builder, &block_quote.source_range, markdown_end);
@@ -109,6 +134,7 @@ impl MarkdownElement {
                     source_allocator,
                     builder,
                     markdown_end,
+                    paragraph_line_height,
                     cx,
                 );
                 self.pop_markdown_block_quote(builder);
@@ -128,6 +154,7 @@ impl MarkdownElement {
         source_allocator: &mut HtmlSourceAllocator,
         builder: &mut MarkdownElementBuilder,
         markdown_end: usize,
+        paragraph_line_height: Option<Pixels>,
         cx: &mut App,
     ) {
         builder.push_div(div().pl_2p5(), &list.source_range, markdown_end);
@@ -155,6 +182,7 @@ impl MarkdownElement {
                 source_allocator,
                 builder,
                 markdown_end,
+                paragraph_line_height,
                 cx,
             );
             self.pop_markdown_list_item(builder);
