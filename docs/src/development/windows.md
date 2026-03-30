@@ -15,8 +15,8 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
 
 - Install [rustup](https://www.rust-lang.org/tools/install)
 
-- Install either [Visual Studio](https://visualstudio.microsoft.com/downloads/) with the optional components `MSVC v*** - VS YYYY C++ x64/x86 build tools` and `MSVC v*** - VS YYYY C++ x64/x86 Spectre-mitigated libs (latest)` (`v***` is your VS version and `YYYY` is the release year. Adjust architecture as needed).
-- Or, if you prefer a slimmer installation, install only the [Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (plus the libs above) and the "Desktop development with C++" workload.
+- Install either [Visual Studio](https://visualstudio.microsoft.com/downloads/) with the optional component `MSVC v*** - VS YYYY C++ x64/x86 build tools` (`v***` is your VS version and `YYYY` is the release year. Adjust architecture as needed).
+- Or, if you prefer a slimmer installation, install only the [Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and the "Desktop development with C++" workload.
   This setup is not picked up automatically by rustup. Before compiling, initialize environment variables by launching the developer shell (cmd/PowerShell) installed in the Start menu or Windows Terminal.
 - Install the Windows 11 or 10 SDK for your system, and make sure at least `Windows 10 SDK version 2104 (10.0.20348.0)` is installed. You can download it from the [Windows SDK Archive](https://developer.microsoft.com/windows/downloads/windows-sdk/).
 - Install [CMake](https://cmake.org/download) (required by [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/)). Or you can install it through Visual Studio Installer, then manually add the `bin` directory to your `PATH`, for example: `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
@@ -32,8 +32,7 @@ If you cannot compile Zed, make sure a Visual Studio installation includes at le
     "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
     "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake",
     "Microsoft.VisualStudio.Component.VC.CMake.Project",
-    "Microsoft.VisualStudio.Component.Windows11SDK.26100",
-    "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+    "Microsoft.VisualStudio.Component.Windows11SDK.26100"
   ],
   "extensions": []
 }
@@ -58,8 +57,7 @@ If you are using Build Tools only, make sure these components are installed:
     "Microsoft.VisualStudio.Component.TextTemplating",
     "Microsoft.VisualStudio.Component.VC.CoreIde",
     "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
-    "Microsoft.VisualStudio.Workload.VCTools",
-    "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+    "Microsoft.VisualStudio.Workload.VCTools"
   ],
   "extensions": []
 }
@@ -70,6 +68,8 @@ You can export this component list as follows:
 - Open the Visual Studio Installer
 - Click on `More` in the `Installed` tab
 - Click on `Export configuration`
+
+If you still see linker errors mentioning `_spectre` libraries, add `Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre` in the Visual Studio Installer and retry the build.
 
 ### Notes
 

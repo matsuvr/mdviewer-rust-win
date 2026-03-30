@@ -20,7 +20,8 @@ pub const PARSE_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_OLD_FOOTNOTES)
     .union(Options::ENABLE_GFM)
     .union(Options::ENABLE_SUPERSCRIPT)
-    .union(Options::ENABLE_SUBSCRIPT);
+    .union(Options::ENABLE_SUBSCRIPT)
+    .union(Options::ENABLE_MATH);
 
 #[derive(Default)]
 struct ParseState {
@@ -424,7 +425,20 @@ pub(crate) fn parse_markdown_with_options(text: &str, parse_html: bool) -> Parse
             pulldown_cmark::Event::TaskListMarker(checked) => {
                 state.push_event(range, MarkdownEvent::TaskListMarker(checked))
             }
-            pulldown_cmark::Event::InlineMath(_) | pulldown_cmark::Event::DisplayMath(_) => {}
+            pulldown_cmark::Event::InlineMath(content) => state.push_event(
+                range,
+                MarkdownEvent::Math {
+                    display_mode: false,
+                    content: content.into_string(),
+                },
+            ),
+            pulldown_cmark::Event::DisplayMath(content) => state.push_event(
+                range,
+                MarkdownEvent::Math {
+                    display_mode: true,
+                    content: content.into_string(),
+                },
+            ),
         }
     }
 
@@ -491,6 +505,8 @@ pub enum MarkdownEvent {
     SubstitutedText(String),
     /// An inline code node.
     Code,
+    /// A KaTeX-style math node.
+    Math { display_mode: bool, content: String },
     /// An HTML node.
     Html,
     /// An inline HTML node.
@@ -663,7 +679,6 @@ mod tests {
     use super::*;
 
     const UNWANTED_OPTIONS: Options = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        .union(Options::ENABLE_MATH)
         .union(Options::ENABLE_DEFINITION_LIST)
         .union(Options::ENABLE_WIKILINKS);
 
@@ -868,6 +883,31 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn test_math_events_are_preserved() {
+        let inline = parse_markdown_with_options("inline $x^2$ math", false);
+        assert!(inline.events.iter().any(|(_, event)| {
+            matches!(
+                event,
+                MarkdownEvent::Math {
+                    display_mode: false,
+                    content,
+                } if content == "x^2"
+            )
+        }));
+
+        let display = parse_markdown_with_options("$$y = x^2$$", false);
+        assert!(display.events.iter().any(|(_, event)| {
+            matches!(
+                event,
+                MarkdownEvent::Math {
+                    display_mode: true,
+                    content,
+                } if content == "y = x^2"
+            )
+        }));
     }
 
     #[test]

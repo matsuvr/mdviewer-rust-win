@@ -1,4 +1,5 @@
 pub mod html;
+mod math;
 mod mermaid;
 pub mod parser;
 mod path_range;
@@ -11,6 +12,7 @@ use gpui::UnderlineStyle;
 use language::LanguageName;
 
 use log::Level;
+use math::{RenderedMarkdownMath, extract_math_formulas, render_markdown_math};
 use mermaid::{
     MermaidState, ParsedMarkdownMermaidDiagram, extract_mermaid_diagrams, render_mermaid_diagram,
 };
@@ -267,6 +269,7 @@ pub struct Markdown {
 pub struct MarkdownOptions {
     pub parse_links_only: bool,
     pub parse_html: bool,
+    pub render_math: bool,
     pub render_mermaid_diagrams: bool,
 }
 
@@ -557,6 +560,7 @@ impl Markdown {
         let source = self.source.clone();
         let should_parse_links_only = self.options.parse_links_only;
         let should_parse_html = self.options.parse_html;
+        let should_render_math = self.options.render_math;
         let should_render_mermaid_diagrams = self.options.render_mermaid_diagrams;
         let language_registry = self.language_registry.clone();
         let fallback = self.fallback_code_block_language.clone();
@@ -571,6 +575,7 @@ impl Markdown {
                         languages_by_path: TreeMap::default(),
                         root_block_starts: Arc::default(),
                         html_blocks: BTreeMap::default(),
+                        math_expressions: BTreeMap::default(),
                         mermaid_diagrams: BTreeMap::default(),
                     },
                     Default::default(),
@@ -583,6 +588,11 @@ impl Markdown {
             let paths = parsed.language_paths;
             let root_block_starts = parsed.root_block_starts;
             let html_blocks = parsed.html_blocks;
+            let math_expressions = if should_render_math {
+                extract_math_formulas(&events)
+            } else {
+                BTreeMap::default()
+            };
             let mermaid_diagrams = if should_render_mermaid_diagrams {
                 extract_mermaid_diagrams(&source, &events)
             } else {
@@ -648,6 +658,7 @@ impl Markdown {
                     languages_by_path,
                     root_block_starts: Arc::from(root_block_starts),
                     html_blocks,
+                    math_expressions,
                     mermaid_diagrams,
                 },
                 images_by_source_offset,
@@ -771,6 +782,7 @@ pub struct ParsedMarkdown {
     pub languages_by_path: TreeMap<Arc<str>, Arc<Language>>,
     pub root_block_starts: Arc<[usize]>,
     pub(crate) html_blocks: BTreeMap<usize, html::html_parser::ParsedHtmlBlock>,
+    pub(crate) math_expressions: BTreeMap<usize, math::ParsedMarkdownMath>,
     pub(crate) mermaid_diagrams: BTreeMap<usize, ParsedMarkdownMermaidDiagram>,
 }
 
@@ -931,11 +943,12 @@ impl MarkdownElement {
         builder: &mut MarkdownElementBuilder,
         range: &Range<usize>,
         markdown_end: usize,
+        line_height: Option<Pixels>,
     ) {
         builder.push_div(
-            div().when(!self.style.height_is_multiple_of_line_height, |el| {
-                el.mb_2().line_height(rems(1.3))
-            }),
+            div()
+                .mb_2()
+                .when_some(line_height, |el, line_height| el.line_height(line_height)),
             range,
             markdown_end,
         );
@@ -1078,6 +1091,57 @@ impl MarkdownElement {
                     BorderStyle::default(),
                 ));
             }
+        }
+    }
+
+    fn paint_inline_math(
+        &self,
+        inline_math: &[RenderedInlineMath],
+        rendered_text: &RenderedText,
+        window: &mut Window,
+    ) {
+        if inline_math.is_empty() {
+            return;
+        }
+
+        let font_id = window
+            .text_system()
+            .resolve_font(&self.style.base_text_style.font());
+        let font_size = self
+            .style
+            .base_text_style
+            .font_size
+            .to_pixels(window.rem_size());
+
+        for inline_math in inline_math {
+            let Some((position, line_height)) =
+                rendered_text.position_for_source_index(inline_math.source_range.start)
+            else {
+                continue;
+            };
+
+            let baseline_y = position.y
+                + window
+                    .text_system()
+                    .baseline_offset(font_id, font_size, line_height);
+            let top = baseline_y - inline_math.math.baseline_from_top;
+            let bounds = Bounds::from_corners(
+                point(position.x, top),
+                point(
+                    position.x + inline_math.math.width,
+                    top + inline_math.math.height,
+                ),
+            );
+
+            window
+                .paint_image(
+                    bounds,
+                    Default::default(),
+                    inline_math.math.image.clone(),
+                    0,
+                    false,
+                )
+                .log_err();
         }
     }
 
@@ -1335,12 +1399,20 @@ impl Element for MarkdownElement {
             self.style.base_text_style.clone(),
             self.style.syntax.clone(),
         );
-        let (parsed_markdown, images, active_root_block, render_mermaid_diagrams, mermaid_state) = {
+        let (
+            parsed_markdown,
+            images,
+            active_root_block,
+            render_math,
+            render_mermaid_diagrams,
+            mermaid_state,
+        ) = {
             let markdown = self.markdown.read(cx);
             (
                 markdown.parsed_markdown.clone(),
                 markdown.images_by_source_offset.clone(),
                 markdown.active_root_block,
+                markdown.options.render_math,
                 markdown.options.render_mermaid_diagrams,
                 markdown.mermaid_state.clone(),
             )
@@ -1349,6 +1421,31 @@ impl Element for MarkdownElement {
             last.0.end
         } else {
             0
+        };
+        let base_font_size = self
+            .style
+            .base_text_style
+            .font_size
+            .to_pixels(window.rem_size());
+        let default_paragraph_line_height = if self.style.height_is_multiple_of_line_height {
+            self.style
+                .base_text_style
+                .line_height
+                .to_pixels(base_font_size.into(), window.rem_size())
+        } else {
+            rems(1.3).to_pixels(window.rem_size())
+        };
+        let rendered_math_by_offset = if render_math {
+            parsed_markdown
+                .math_expressions
+                .iter()
+                .filter_map(|(offset, parsed_math)| {
+                    render_markdown_math(parsed_math, &self.style, window, cx)
+                        .map(|rendered_math| (*offset, rendered_math))
+                })
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::default()
         };
         let mut code_block_ids = HashSet::default();
 
@@ -1414,9 +1511,17 @@ impl Element for MarkdownElement {
                                 self.push_markdown_image(&mut builder, range, source, None, None);
                             }
                         }
-                        MarkdownTag::Paragraph => {
-                            self.push_markdown_paragraph(&mut builder, range, markdown_end);
-                        }
+                        MarkdownTag::Paragraph => self.push_markdown_paragraph(
+                            &mut builder,
+                            range,
+                            markdown_end,
+                            paragraph_line_height(
+                                range,
+                                &rendered_math_by_offset,
+                                default_paragraph_line_height,
+                                !self.style.height_is_multiple_of_line_height,
+                            ),
+                        ),
                         MarkdownTag::Heading { level, .. } => {
                             self.push_markdown_heading(&mut builder, *level, range, markdown_end);
                         }
@@ -1799,6 +1904,30 @@ impl Element for MarkdownElement {
                     builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
                     builder.pop_text_style();
                 }
+                MarkdownEvent::Math { .. } => {
+                    if render_math
+                        && let Some(rendered_math) = rendered_math_by_offset.get(&range.start)
+                    {
+                        if rendered_math.display_mode {
+                            builder.push_sourced_element(
+                                range.clone(),
+                                rendered_math.into_display_element(),
+                            );
+                        } else {
+                            builder.push_inline_math(
+                                range.clone(),
+                                rendered_math.clone(),
+                                inline_math_placeholder(
+                                    rendered_math.width,
+                                    &self.style.base_text_style,
+                                    window,
+                                ),
+                            );
+                        }
+                    } else {
+                        builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
+                    }
+                }
                 MarkdownEvent::Html => {
                     let html = &parsed_markdown.source[range.clone()];
                     if html.starts_with("<!--") {
@@ -1853,7 +1982,7 @@ impl Element for MarkdownElement {
             self.markdown
                 .update(cx, |markdown, _| markdown.clear_code_block_scroll_handles());
         }
-        let mut rendered_markdown = builder.build();
+        let mut rendered_markdown = builder.build(parsed_markdown.source.clone());
         let child_layout_id = rendered_markdown.element.request_layout(window, cx);
         let layout_id = window.request_layout(gpui::Style::default(), [child_layout_id], cx);
         (layout_id, rendered_markdown)
@@ -1912,8 +2041,88 @@ impl Element for MarkdownElement {
 
         self.paint_mouse_listeners(hitbox, &rendered_markdown.text, window, cx);
         rendered_markdown.element.paint(window, cx);
+        self.paint_inline_math(
+            &rendered_markdown.inline_math,
+            &rendered_markdown.text,
+            window,
+        );
         self.paint_selection(bounds, &rendered_markdown.text, window, cx);
     }
+}
+
+fn paragraph_line_height(
+    range: &Range<usize>,
+    rendered_math_by_offset: &BTreeMap<usize, RenderedMarkdownMath>,
+    default_line_height: Pixels,
+    always_set_line_height: bool,
+) -> Option<Pixels> {
+    let mut line_height = default_line_height;
+    let mut needs_override = false;
+
+    for (_, rendered_math) in rendered_math_by_offset.range(range.start..range.end) {
+        if rendered_math.display_mode {
+            continue;
+        }
+
+        if rendered_math.height > line_height {
+            line_height = rendered_math.height;
+            needs_override = true;
+        }
+    }
+
+    if always_set_line_height || needs_override {
+        Some(line_height)
+    } else {
+        None
+    }
+}
+
+fn inline_math_placeholder(width: Pixels, text_style: &TextStyle, window: &Window) -> String {
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let font_id = window.text_system().resolve_font(&text_style.font());
+    let candidates = [
+        (
+            'm',
+            window.text_system().layout_width(font_id, font_size, 'm'),
+        ),
+        (
+            'n',
+            window.text_system().layout_width(font_id, font_size, 'n'),
+        ),
+        (
+            'i',
+            window.text_system().layout_width(font_id, font_size, 'i'),
+        ),
+        (
+            '.',
+            window.text_system().layout_width(font_id, font_size, '.'),
+        ),
+    ];
+
+    let mut remaining = width;
+    let mut placeholder = String::new();
+
+    while remaining > Pixels::ZERO {
+        let mut chosen = candidates.last().copied().unwrap();
+        for candidate in candidates {
+            if candidate.1 <= remaining {
+                chosen = candidate;
+                break;
+            }
+        }
+
+        placeholder.push(chosen.0);
+        if chosen.1 >= remaining {
+            break;
+        }
+        remaining -= chosen.1;
+    }
+
+    if placeholder.is_empty() {
+        placeholder.push('i');
+    }
+
+    placeholder
 }
 
 fn apply_heading_style(
@@ -2082,6 +2291,7 @@ struct MarkdownElementBuilder {
     rendered_lines: Vec<RenderedLine>,
     pending_line: PendingLine,
     rendered_links: Vec<RenderedLink>,
+    inline_math: Vec<RenderedInlineMath>,
     current_source_index: usize,
     html_comment: bool,
     base_text_style: TextStyle,
@@ -2118,6 +2328,7 @@ impl MarkdownElementBuilder {
             rendered_lines: Vec::new(),
             pending_line: PendingLine::default(),
             rendered_links: Vec::new(),
+            inline_math: Vec::new(),
             current_source_index: 0,
             html_comment: false,
             base_text_style,
@@ -2238,6 +2449,22 @@ impl MarkdownElementBuilder {
                 .child(element.into())
                 .into_any_element()
         }]);
+    }
+
+    fn push_inline_math(
+        &mut self,
+        source_range: Range<usize>,
+        math: RenderedMarkdownMath,
+        placeholder: String,
+    ) {
+        self.push_text_style(TextStyleRefinement {
+            color: Some(Hsla::transparent_black()),
+            ..Default::default()
+        });
+        self.push_text(&placeholder, source_range.clone());
+        self.pop_text_style();
+        self.inline_math
+            .push(RenderedInlineMath { source_range, math });
     }
 
     fn push_list(&mut self, bullet_index: Option<u64>) {
@@ -2380,15 +2607,23 @@ impl MarkdownElementBuilder {
         self.div_stack.last_mut().unwrap().extend([text.into_any()]);
     }
 
-    fn build(mut self) -> RenderedMarkdown {
+    fn build(mut self, source: SharedString) -> RenderedMarkdown {
         debug_assert_eq!(self.div_stack.len(), 1);
         self.flush_text();
         RenderedMarkdown {
             element: self.div_stack.pop().unwrap().into_any_element(),
             text: RenderedText {
+                source,
                 lines: self.rendered_lines.into(),
                 links: self.rendered_links.into(),
+                inline_math_ranges: self
+                    .inline_math
+                    .iter()
+                    .map(|math| math.source_range.clone())
+                    .collect::<Vec<_>>()
+                    .into(),
             },
+            inline_math: self.inline_math,
         }
     }
 }
@@ -2496,12 +2731,20 @@ struct SourceMapping {
 pub struct RenderedMarkdown {
     element: AnyElement,
     text: RenderedText,
+    inline_math: Vec<RenderedInlineMath>,
 }
 
 #[derive(Clone)]
 struct RenderedText {
+    source: SharedString,
     lines: Rc<[RenderedLine]>,
     links: Rc<[RenderedLink]>,
+    inline_math_ranges: Rc<[Range<usize>]>,
+}
+
+struct RenderedInlineMath {
+    source_range: Range<usize>,
+    math: RenderedMarkdownMath,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -2511,6 +2754,12 @@ struct RenderedLink {
 }
 
 impl RenderedText {
+    fn inline_math_range_at(&self, source_index: usize) -> Option<&Range<usize>> {
+        self.inline_math_ranges
+            .iter()
+            .find(|range| range.contains(&source_index))
+    }
+
     fn source_index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
         let mut lines = self.lines.iter().peekable();
         let mut fallback_line: Option<&RenderedLine> = None;
@@ -2564,6 +2813,10 @@ impl RenderedText {
     }
 
     fn surrounding_word_range(&self, source_index: usize) -> Range<usize> {
+        if let Some(inline_math_range) = self.inline_math_range_at(source_index) {
+            return inline_math_range.clone();
+        }
+
         for line in self.lines.iter() {
             if source_index > line.source_end {
                 continue;
@@ -2634,26 +2887,51 @@ impl RenderedText {
                 break;
             }
 
-            let text = line.layout.text();
-
-            let start = if range.start < line_source_start {
-                0
-            } else {
-                line.rendered_index_for_source_index(range.start)
-            };
-            let end = if range.end > line.source_end {
-                line.rendered_index_for_source_index(line.source_end)
-            } else {
-                line.rendered_index_for_source_index(range.end)
+            let line_start = range.start.max(line_source_start);
+            let line_end = range.end.min(line.source_end);
+            if line_start >= line_end {
+                continue;
             }
-            .min(text.len());
 
-            accumulator.push_str(&text[start..end]);
+            let mut cursor = line_start;
+            for inline_math_range in self.inline_math_ranges.iter().filter(|inline_math_range| {
+                inline_math_range.end > line_start && inline_math_range.start < line_end
+            }) {
+                let visible_end = inline_math_range.start.min(line_end);
+                if cursor < visible_end {
+                    accumulator
+                        .push_str(&self.visible_text_for_line_range(line, cursor..visible_end));
+                }
+
+                let hidden_start = inline_math_range.start.max(line_start);
+                let hidden_end = inline_math_range.end.min(line_end);
+                if hidden_start < hidden_end {
+                    accumulator.push_str(&self.source[hidden_start..hidden_end]);
+                }
+                cursor = hidden_end;
+            }
+
+            if cursor < line_end {
+                accumulator.push_str(&self.visible_text_for_line_range(line, cursor..line_end));
+            }
             accumulator.push('\n');
         }
-        // Remove trailing newline
-        accumulator.pop();
+
+        if !accumulator.is_empty() {
+            accumulator.pop();
+        }
         accumulator
+    }
+
+    fn visible_text_for_line_range(&self, line: &RenderedLine, range: Range<usize>) -> String {
+        let text = line.layout.text();
+        let start = line
+            .rendered_index_for_source_index(range.start)
+            .min(text.len());
+        let end = line
+            .rendered_index_for_source_index(range.end)
+            .min(text.len());
+        text[start..end].to_string()
     }
 
     fn link_for_position(&self, position: Point<Pixels>) -> Option<&RenderedLink> {
@@ -3107,6 +3385,28 @@ mod tests {
             Markdown::escape("hello\n    cool world"),
             "hello\n\ncool world"
         );
+    }
+
+    #[gpui::test]
+    fn test_math_renders_as_source_when_disabled(cx: &mut TestAppContext) {
+        let rendered = render_markdown("inline $x^2$ math", cx);
+        assert_eq!(rendered.text_for_range(0..17), "inline $x^2$ math");
+    }
+
+    #[gpui::test]
+    fn test_inline_math_stays_in_line_when_rendered(cx: &mut TestAppContext) {
+        let rendered = render_markdown_with_options(
+            "before $x^2$ after",
+            None,
+            MarkdownOptions {
+                render_math: true,
+                ..Default::default()
+            },
+            cx,
+        );
+
+        assert_eq!(rendered.lines.len(), 1);
+        assert_eq!(rendered.text_for_range(0..18), "before $x^2$ after");
     }
 
     #[track_caller]

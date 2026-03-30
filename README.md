@@ -1,46 +1,81 @@
-# Zed
+# Markdown Viewer
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+A fast, read-only Markdown viewer for Windows x64.
 
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+## What this repository contains
 
----
+This repository packages `crates\markdown_viewer` as a standalone Windows application. The surrounding workspace is a curated subset of the Zed codebase that remains necessary to build the viewer and render Markdown with Zed's existing UI, theme, asset, and parsing crates.
 
-### Installation
+## Current scope
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+- Windows x64 only
+- read-only Markdown viewing
+- local Markdown links resolved relative to the current document
+- external URLs opened in the system browser
+- math, Mermaid diagrams, code blocks, bundled fonts, and bundled themes inherited from the retained Zed stack
 
-Other platforms are not yet available:
+## Relationship to Zed
 
-- Web ([tracking issue](https://github.com/zed-industries/zed/issues/5396))
+This project is derived in part from the Zed repository and reworked into an independent Markdown viewer.
 
-### Developing Zed
+- Upstream project: `https://github.com/zed-industries/zed`
+- Product entry point in this repository: `crates\markdown_viewer`
+- This project is **not** the Zed editor
+- This project is **not affiliated with or endorsed by Zed Industries**
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+Large portions of the implementation were adapted from Zed crates. Copyright in those portions remains with their respective original authors and contributors.
 
-### Contributing
+## Building and running
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+`markdown_viewer` currently targets `x86_64-pc-windows-msvc` only.
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+```powershell
+cargo run -p markdown_viewer -- path\to\file.md
+cargo build -p markdown_viewer --release
+```
 
-### Licensing
+Running without a path opens an empty viewer window.
 
-License information for third party dependencies must be correctly provided for CI to pass.
+## Licensing
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+The repository and release artifacts are distributed under `GPL-3.0-or-later`. A copy of the GPL text is provided in `LICENSE` for GitHub license detection and in `LICENSE-GPL` to preserve the upstream layout.
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+This repository also retains Apache-2.0-licensed crates from Zed, especially the `gpui` platform stack and shared utility crates. Their original notices remain in place, and the corresponding license text is included in `LICENSE-APACHE`.
 
-## Sponsorship
+The upstream tree still contains `LICENSE-AGPL`, but the current `markdown_viewer` dependency closure does not include AGPL-licensed workspace crates.
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+For the current Windows viewer build, the normal workspace dependency closure of `markdown_viewer` contains `50` internal workspace crates:
 
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+- `35` crates under `GPL-3.0-or-later`
+- `15` crates under `Apache-2.0`
+- `0` AGPL crates in the shipped viewer dependency closure
+
+See `THIRD_PARTY_LICENSES.md` for the crate-by-crate inventory and the source of each license decision.
+
+### New code in this fork
+
+New standalone code written specifically for this fork may be licensed under `Apache-2.0` when it does not copy or adapt GPL-derived material. If a file is derived from a GPL-licensed Zed crate, or is added inside a GPL-derived crate and forms part of that adapted work, it should remain GPL-compatible. Regardless of individual file terms, redistribution of the combined application remains `GPL-3.0-or-later`.
+
+## Third-party dependency notices
+
+External dependencies from crates.io and other upstreams are tracked separately with `cargo-about`.
+
+Generate the release-time notice bundle with:
+
+```powershell
+script\generate-licenses.ps1 assets\licenses.md
+```
+
+Include the generated `assets\licenses.md` file (or a copied equivalent) with any binary release.
+
+## Source availability
+
+If binaries are published, the corresponding source code is the matching Git tag and source archive in this repository.
+
+## Repository notes
+
+Some upstream Zed documentation is still present in `docs\` and other folders for reference. Unless a page explicitly mentions `markdown_viewer`, treat it as upstream background material rather than product documentation for this standalone viewer.
+
+## Credits
+
+This project would not exist without the Zed project and its contributors.

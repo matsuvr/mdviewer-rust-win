@@ -1,0 +1,30 @@
+[package]
+name = "markdown_viewer"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+description = "Fast, read-only Markdown viewer for Windows x64"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "markdown_viewer"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+assets.workspace = true
+clap.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+markdown.workspace = true
+settings.workspace = true
+theme.workspace = true
+theme_settings.workspace = true
+ui.workspace = true
+urlencoding.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

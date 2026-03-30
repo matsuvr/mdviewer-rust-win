@@ -1,0 +1,8 @@
+This repository contains an independent Windows Markdown viewer derived in part from the Zed project.
+
+Upstream project:
+https://github.com/zed-industries/zed
+
+This project is not affiliated with or endorsed by Zed Industries.
+
+Portions of the source tree remain subject to their original crate-level license notices, including GPL-3.0-or-later and Apache-2.0. See LICENSE, LICENSE-GPL, LICENSE-APACHE, and THIRD_PARTY_LICENSES.md for details.
