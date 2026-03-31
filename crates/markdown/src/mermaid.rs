@@ -3,10 +3,13 @@ use gpui::{
     Animation, AnimationExt, AnyElement, Context, ImageSource, RenderImage, StyledText, Task, img,
     pulsating_between,
 };
+use mermaid_rs_renderer::{LayoutConfig, Theme, compute_layout, parse_mermaid, render_svg};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use theme::Appearance;
 use ui::prelude::*;
 
 use crate::parser::{CodeBlockKind, MarkdownEvent, MarkdownTag};
@@ -99,11 +102,14 @@ impl CachedMermaidDiagram {
         let render_image = Arc::new(OnceLock::<anyhow::Result<Arc<RenderImage>>>::new());
         let render_image_clone = render_image.clone();
         let svg_renderer = cx.svg_renderer();
+        let appearance = cx.theme().appearance;
 
         let task = cx.spawn(async move |this, cx| {
             let value = cx
                 .background_spawn(async move {
-                    let svg_string = mermaid_rs_renderer::render(&contents.contents)?;
+                    // Use the lower-level pipeline so Zed can match GitHub's default/dark
+                    // Mermaid themes and honor `%%{init}%%` directives without leaving pure Rust.
+                    let svg_string = render_mermaid_svg(&contents.contents, appearance)?;
                     let scale = contents.scale as f32 / 100.0;
                     svg_renderer
                         .render_single_frame(svg_string.as_bytes(), scale, true)
@@ -139,6 +145,393 @@ impl CachedMermaidDiagram {
             _task: Task::ready(()),
         }
     }
+}
+
+fn render_mermaid_svg(source: &str, appearance: Appearance) -> anyhow::Result<String> {
+    let parsed = parse_mermaid(source)?;
+    let mut theme = github_mermaid_theme(appearance);
+    let mut layout_config = LayoutConfig::default();
+
+    if let Some(init) = parsed.init_config.as_ref() {
+        apply_init_config(init, appearance, &mut theme, &mut layout_config);
+    }
+
+    let layout = compute_layout(&parsed.graph, &theme, &layout_config);
+    Ok(render_svg(&layout, &theme, &layout_config))
+}
+
+fn github_mermaid_theme(appearance: Appearance) -> Theme {
+    if appearance.is_light() {
+        Theme::mermaid_default()
+    } else {
+        github_dark_mermaid_theme()
+    }
+}
+
+fn github_dark_mermaid_theme() -> Theme {
+    let mut theme = Theme::mermaid_default();
+    theme.background = "#333333".to_string();
+    theme.primary_color = "#1F2020".to_string();
+    theme.primary_text_color = "#CCCCCC".to_string();
+    theme.primary_border_color = "#CCCCCC".to_string();
+    theme.line_color = "#CCCCCC".to_string();
+    theme.secondary_color = "#494949".to_string();
+    theme.tertiary_color = "#3F5258".to_string();
+    theme.edge_label_background = "#181818".to_string();
+    theme.cluster_background = "#302F3D".to_string();
+    theme.cluster_border = "rgba(255, 255, 255, 0.25)".to_string();
+    theme.sequence_actor_fill = "#1F2020".to_string();
+    theme.sequence_actor_border = "#CCCCCC".to_string();
+    theme.sequence_actor_line = "#CCCCCC".to_string();
+    theme.sequence_note_fill = "#494949".to_string();
+    theme.sequence_note_border = "rgba(255, 255, 255, 0.25)".to_string();
+    theme.sequence_activation_fill = "#494949".to_string();
+    theme.sequence_activation_border = "#CCCCCC".to_string();
+    theme.text_color = "#CCCCCC".to_string();
+    theme.git_commit_label_color = "#CCCCCC".to_string();
+    theme.git_commit_label_background = "#494949".to_string();
+    theme.git_tag_label_color = "#CCCCCC".to_string();
+    theme.git_tag_label_background = "#1F2020".to_string();
+    theme.git_tag_label_border = "#CCCCCC".to_string();
+    theme.pie_title_text_color = "#F9FFFE".to_string();
+    theme.pie_section_text_color = "#CCCCCC".to_string();
+    theme.pie_legend_text_color = "#F9FFFE".to_string();
+    theme
+}
+
+fn apply_init_config(
+    init: &Value,
+    appearance: Appearance,
+    theme: &mut Theme,
+    layout: &mut LayoutConfig,
+) {
+    if let Some(theme_name) = init.get("theme").and_then(Value::as_str) {
+        *theme = match theme_name.to_ascii_lowercase().as_str() {
+            "dark" => github_dark_mermaid_theme(),
+            "modern" => Theme::modern(),
+            "base" | "default" | "mermaid" | "neutral" => Theme::mermaid_default(),
+            _ => github_mermaid_theme(appearance),
+        };
+    }
+
+    if let Some(theme_vars) = init.get("themeVariables") {
+        apply_theme_variables(theme, theme_vars);
+    }
+
+    if let Some(flowchart) = init.get("flowchart") {
+        apply_flowchart_config(layout, flowchart);
+    }
+}
+
+fn apply_theme_variables(theme: &mut Theme, theme_vars: &Value) {
+    const GIT_COLOR_KEYS: [&str; 8] = [
+        "git0", "git1", "git2", "git3", "git4", "git5", "git6", "git7",
+    ];
+    const GIT_INV_KEYS: [&str; 8] = [
+        "gitInv0", "gitInv1", "gitInv2", "gitInv3", "gitInv4", "gitInv5", "gitInv6", "gitInv7",
+    ];
+    const GIT_BRANCH_LABEL_KEYS: [&str; 8] = [
+        "gitBranchLabel0",
+        "gitBranchLabel1",
+        "gitBranchLabel2",
+        "gitBranchLabel3",
+        "gitBranchLabel4",
+        "gitBranchLabel5",
+        "gitBranchLabel6",
+        "gitBranchLabel7",
+    ];
+    const PIE_KEYS: [&str; 12] = [
+        "pie1", "pie2", "pie3", "pie4", "pie5", "pie6", "pie7", "pie8", "pie9", "pie10", "pie11",
+        "pie12",
+    ];
+
+    let tag_label_border_explicit = json_string(theme_vars, "tagLabelBorder").is_some();
+    let primary_border_override = json_string(theme_vars, "primaryBorderColor");
+
+    if let Some(value) = json_string(theme_vars, "fontFamily") {
+        theme.font_family = value;
+    }
+    if let Some(value) = json_f32(theme_vars, "fontSize") {
+        theme.font_size = value;
+    }
+    if let Some(value) = json_string(theme_vars, "primaryColor") {
+        theme.primary_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "primaryTextColor") {
+        theme.primary_text_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "primaryBorderColor") {
+        theme.primary_border_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "lineColor") {
+        theme.line_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "secondaryColor") {
+        theme.secondary_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "tertiaryColor") {
+        theme.tertiary_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "textColor") {
+        theme.text_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "edgeLabelBackground") {
+        theme.edge_label_background = value;
+    }
+    if let Some(value) = json_string(theme_vars, "clusterBkg") {
+        theme.cluster_background = value;
+    }
+    if let Some(value) = json_string(theme_vars, "clusterBorder") {
+        theme.cluster_border = value;
+    }
+    if let Some(value) = json_string(theme_vars, "background") {
+        theme.background = value;
+    }
+    if let Some(value) = json_string(theme_vars, "actorBkg") {
+        theme.sequence_actor_fill = value;
+    }
+    if let Some(value) = json_string(theme_vars, "actorBorder") {
+        theme.sequence_actor_border = value;
+    }
+    if let Some(value) = json_string(theme_vars, "actorLine") {
+        theme.sequence_actor_line = value;
+    }
+    if let Some(value) = json_string(theme_vars, "noteBkg") {
+        theme.sequence_note_fill = value;
+    }
+    if let Some(value) = json_string(theme_vars, "noteBorderColor") {
+        theme.sequence_note_border = value;
+    }
+    if let Some(value) = json_string(theme_vars, "activationBkgColor") {
+        theme.sequence_activation_fill = value;
+    }
+    if let Some(value) = json_string(theme_vars, "activationBorderColor") {
+        theme.sequence_activation_border = value;
+    }
+
+    for (index, key) in GIT_COLOR_KEYS.iter().enumerate() {
+        if let Some(value) = json_string(theme_vars, key) {
+            theme.git_colors[index] = value;
+        }
+    }
+
+    for (index, key) in GIT_INV_KEYS.iter().enumerate() {
+        if let Some(value) = json_string(theme_vars, key) {
+            theme.git_inv_colors[index] = value;
+        }
+    }
+
+    for (index, key) in GIT_BRANCH_LABEL_KEYS.iter().enumerate() {
+        if let Some(value) = json_string(theme_vars, key) {
+            theme.git_branch_label_colors[index] = value;
+        }
+    }
+
+    if let Some(value) = json_string(theme_vars, "commitLabelColor") {
+        theme.git_commit_label_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "commitLabelBackground") {
+        theme.git_commit_label_background = value;
+    }
+    if let Some(value) = json_string(theme_vars, "tagLabelColor") {
+        theme.git_tag_label_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "tagLabelBackground") {
+        theme.git_tag_label_background = value;
+    }
+    if let Some(value) = json_string(theme_vars, "tagLabelBorder") {
+        theme.git_tag_label_border = value;
+    }
+    if !tag_label_border_explicit && primary_border_override.is_some() {
+        theme.git_tag_label_border = theme.primary_border_color.clone();
+    }
+
+    for (index, key) in PIE_KEYS.iter().enumerate() {
+        if let Some(value) = json_string(theme_vars, key) {
+            theme.pie_colors[index] = value;
+        }
+    }
+
+    if let Some(value) = json_f32(theme_vars, "pieTitleTextSize") {
+        theme.pie_title_text_size = value;
+    }
+    if let Some(value) = json_string(theme_vars, "pieTitleTextColor") {
+        theme.pie_title_text_color = value;
+    }
+    if let Some(value) = json_f32(theme_vars, "pieSectionTextSize") {
+        theme.pie_section_text_size = value;
+    }
+    if let Some(value) = json_string(theme_vars, "pieSectionTextColor") {
+        theme.pie_section_text_color = value;
+    }
+    if let Some(value) = json_f32(theme_vars, "pieLegendTextSize") {
+        theme.pie_legend_text_size = value;
+    }
+    if let Some(value) = json_string(theme_vars, "pieLegendTextColor") {
+        theme.pie_legend_text_color = value;
+    }
+    if let Some(value) = json_string(theme_vars, "pieStrokeColor") {
+        theme.pie_stroke_color = value;
+    }
+    if let Some(value) = json_f32(theme_vars, "pieStrokeWidth") {
+        theme.pie_stroke_width = value;
+    }
+    if let Some(value) = json_f32(theme_vars, "pieOuterStrokeWidth") {
+        theme.pie_outer_stroke_width = value;
+    }
+    if let Some(value) = json_string(theme_vars, "pieOuterStrokeColor") {
+        theme.pie_outer_stroke_color = value;
+    }
+    if let Some(value) = json_f32(theme_vars, "pieOpacity") {
+        theme.pie_opacity = value;
+    }
+}
+
+fn apply_flowchart_config(layout: &mut LayoutConfig, flowchart: &Value) {
+    if let Some(value) = json_f32(flowchart, "nodeSpacing") {
+        layout.node_spacing = value;
+    }
+    if let Some(value) = json_f32(flowchart, "rankSpacing") {
+        layout.rank_spacing = value;
+    }
+    if let Some(value) = json_usize(flowchart, "orderPasses") {
+        layout.flowchart.order_passes = value;
+    }
+    if let Some(value) = json_f32(flowchart, "portPadRatio") {
+        layout.flowchart.port_pad_ratio = value;
+    }
+    if let Some(value) = json_f32(flowchart, "portPadMin") {
+        layout.flowchart.port_pad_min = value;
+    }
+    if let Some(value) = json_f32(flowchart, "portPadMax") {
+        layout.flowchart.port_pad_max = value;
+    }
+    if let Some(value) = json_f32(flowchart, "portSideBias") {
+        layout.flowchart.port_side_bias = value;
+    }
+
+    if let Some(auto_spacing) = flowchart.get("autoSpacing") {
+        if let Some(value) = json_bool(auto_spacing, "enabled") {
+            layout.flowchart.auto_spacing.enabled = value;
+        }
+        if let Some(value) = json_f32(auto_spacing, "minSpacing") {
+            layout.flowchart.auto_spacing.min_spacing = value;
+        }
+        if let Some(value) = json_f32(auto_spacing, "densityThreshold") {
+            layout.flowchart.auto_spacing.density_threshold = value;
+        }
+        if let Some(value) = json_f32(auto_spacing, "denseScaleFloor") {
+            layout.flowchart.auto_spacing.dense_scale_floor = value;
+        }
+        if let Some(buckets) = auto_spacing.get("buckets").and_then(Value::as_array) {
+            let mut parsed_buckets = Vec::with_capacity(buckets.len());
+            for bucket in buckets {
+                let Some(min_nodes) = bucket.get("minNodes").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let Some(scale) = json_f32(bucket, "scale") else {
+                    continue;
+                };
+                parsed_buckets.push(mermaid_rs_renderer::config::FlowchartAutoSpacingBucket {
+                    min_nodes: min_nodes as usize,
+                    scale,
+                });
+            }
+            if !parsed_buckets.is_empty() {
+                layout.flowchart.auto_spacing.buckets = parsed_buckets;
+            }
+        }
+    }
+
+    if let Some(routing) = flowchart.get("routing") {
+        if let Some(value) = json_bool(routing, "enableGridRouter") {
+            layout.flowchart.routing.enable_grid_router = value;
+        }
+        if let Some(value) = json_f32(routing, "gridCell") {
+            layout.flowchart.routing.grid_cell = value;
+        }
+        if let Some(value) = json_f32(routing, "turnPenalty") {
+            layout.flowchart.routing.turn_penalty = value;
+        }
+        if let Some(value) = json_f32(routing, "occupancyWeight") {
+            layout.flowchart.routing.occupancy_weight = value;
+        }
+        if let Some(value) = json_usize(routing, "maxSteps") {
+            layout.flowchart.routing.max_steps = value;
+        }
+        if let Some(value) = json_bool(routing, "snapPortsToGrid") {
+            layout.flowchart.routing.snap_ports_to_grid = value;
+        }
+    }
+
+    if let Some(objective) = flowchart.get("objective") {
+        if let Some(value) = json_bool(objective, "enabled") {
+            layout.flowchart.objective.enabled = value;
+        }
+        if let Some(value) = json_f32(objective, "maxAspectRatio") {
+            layout.flowchart.objective.max_aspect_ratio = value;
+        }
+        if let Some(value) = json_usize(objective, "wrapMinGroups") {
+            layout.flowchart.objective.wrap_min_groups = value;
+        }
+        if let Some(value) = json_f32(objective, "wrapMainGapScale") {
+            layout.flowchart.objective.wrap_main_gap_scale = value;
+        }
+        if let Some(value) = json_f32(objective, "wrapCrossGapScale") {
+            layout.flowchart.objective.wrap_cross_gap_scale = value;
+        }
+        if let Some(value) = json_usize(objective, "edgeRelaxPasses") {
+            layout.flowchart.objective.edge_relax_passes = value;
+        }
+        if let Some(value) = json_f32(objective, "edgeGapFloorRatio") {
+            layout.flowchart.objective.edge_gap_floor_ratio = value;
+        }
+        if let Some(value) = json_f32(objective, "edgeLabelWeight") {
+            layout.flowchart.objective.edge_label_weight = value;
+        }
+        if let Some(value) = json_f32(objective, "endpointLabelWeight") {
+            layout.flowchart.objective.endpoint_label_weight = value;
+        }
+        if let Some(value) = json_f32(objective, "backedgeCrossWeight") {
+            layout.flowchart.objective.backedge_cross_weight = value;
+        }
+    }
+}
+
+fn json_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn json_f32(value: &Value, key: &str) -> Option<f32> {
+    let value = value.get(key)?;
+    value.as_f64().map(|value| value as f32).or_else(|| {
+        value
+            .as_str()?
+            .trim()
+            .trim_end_matches("px")
+            .parse::<f32>()
+            .ok()
+    })
+}
+
+fn json_usize(value: &Value, key: &str) -> Option<usize> {
+    let value = value.get(key)?;
+    value
+        .as_u64()
+        .map(|value| value as usize)
+        .or_else(|| value.as_str()?.trim().parse::<usize>().ok())
+}
+
+fn json_bool(value: &Value, key: &str) -> Option<bool> {
+    let value = value.get(key)?;
+    value.as_bool().or_else(|| match value.as_str()?.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    })
 }
 
 fn parse_mermaid_info(info: &str) -> Option<u32> {
@@ -264,12 +657,16 @@ pub(crate) fn render_mermaid_diagram(
 mod tests {
     use super::{
         CachedMermaidDiagram, MermaidDiagramCache, MermaidState,
-        ParsedMarkdownMermaidDiagramContents, extract_mermaid_diagrams, parse_mermaid_info,
+        ParsedMarkdownMermaidDiagramContents, apply_init_config, extract_mermaid_diagrams,
+        github_mermaid_theme, parse_mermaid_info, render_mermaid_svg,
     };
     use crate::{CodeBlockRenderer, Markdown, MarkdownElement, MarkdownOptions, MarkdownStyle};
     use collections::HashMap;
     use gpui::{Context, IntoElement, Render, RenderImage, TestAppContext, Window, size};
+    use mermaid_rs_renderer::LayoutConfig;
+    use serde_json::json;
     use std::sync::Arc;
+    use theme::Appearance;
     use ui::prelude::*;
 
     fn ensure_theme_initialized(cx: &mut TestAppContext) {
@@ -377,6 +774,69 @@ mod tests {
         let diagram = diagrams.values().next().unwrap();
         assert_eq!(diagram.contents.contents, "graph TD;");
         assert_eq!(diagram.contents.scale, 150);
+    }
+
+    #[test]
+    fn test_render_mermaid_svg_uses_github_dark_theme_for_dark_appearance() {
+        let svg = render_mermaid_svg("flowchart LR\nA-->B", Appearance::Dark).unwrap();
+
+        assert!(svg.contains("fill=\"#333333\""));
+        assert!(svg.contains("fill=\"#1F2020\""));
+        assert!(svg.contains("stroke=\"#CCCCCC\""));
+    }
+
+    #[test]
+    fn test_render_mermaid_svg_honors_theme_override_in_init() {
+        let svg = render_mermaid_svg(
+            r#"%%{init: {"theme":"dark"}}%%
+flowchart LR
+A-->B"#,
+            Appearance::Light,
+        )
+        .unwrap();
+
+        assert!(svg.contains("fill=\"#333333\""));
+        assert!(svg.contains("fill=\"#1F2020\""));
+    }
+
+    #[test]
+    fn test_render_mermaid_svg_honors_theme_variable_overrides() {
+        let svg = render_mermaid_svg(
+            r##"%%{init: {"themeVariables":{"primaryColor":"#ff00ff","lineColor":"#00ff00","background":"#010203"}}}%%
+flowchart LR
+A-->B"##,
+            Appearance::Light,
+        )
+        .unwrap();
+
+        assert!(svg.contains("fill=\"#010203\""));
+        assert!(svg.contains("fill=\"#ff00ff\""));
+        assert!(svg.contains("stroke=\"#00ff00\""));
+    }
+
+    #[test]
+    fn test_apply_init_config_honors_flowchart_spacing_overrides() {
+        let init = json!({
+            "flowchart": {
+                "nodeSpacing": 120,
+                "rankSpacing": 120,
+                "orderPasses": 8,
+                "routing": {
+                    "gridCell": 24,
+                    "snapPortsToGrid": false
+                }
+            }
+        });
+        let mut theme = github_mermaid_theme(Appearance::Light);
+        let mut layout = LayoutConfig::default();
+
+        apply_init_config(&init, Appearance::Light, &mut theme, &mut layout);
+
+        assert_eq!(layout.node_spacing, 120.0);
+        assert_eq!(layout.rank_spacing, 120.0);
+        assert_eq!(layout.flowchart.order_passes, 8);
+        assert_eq!(layout.flowchart.routing.grid_cell, 24.0);
+        assert!(!layout.flowchart.routing.snap_ports_to_grid);
     }
 
     #[gpui::test]

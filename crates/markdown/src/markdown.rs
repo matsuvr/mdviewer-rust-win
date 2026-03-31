@@ -38,8 +38,8 @@ use gpui::{
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, Hitbox, Hsla, Image,
     ImageFormat, ImageSource, KeyContext, Length, MouseButton, MouseDownEvent, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Point, ScrollHandle, Stateful, StrikethroughStyle,
-    StyleRefinement, StyledText, Task, TextLayout, TextRun, TextStyle, TextStyleRefinement,
-    actions, img, point, quad,
+    StyleRefinement, StyledText, Subscription, Task, TextLayout, TextRun, TextStyle,
+    TextStyleRefinement, actions, img, point, quad,
 };
 use language::{CharClassifier, Language, LanguageRegistry, Rope};
 use parser::CodeBlockMetadata;
@@ -260,6 +260,7 @@ pub struct Markdown {
     fallback_code_block_language: Option<LanguageName>,
     options: MarkdownOptions,
     mermaid_state: MermaidState,
+    _subscriptions: Vec<Subscription>,
     copied_code_blocks: HashSet<ElementId>,
     code_block_scroll_handles: BTreeMap<usize, ScrollHandle>,
     context_menu_selected_text: Option<String>,
@@ -335,6 +336,17 @@ impl Markdown {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+        let subscriptions = vec![cx.observe_global::<theme::GlobalTheme>(|this, cx| {
+            if !this.options.render_mermaid_diagrams {
+                return;
+            }
+
+            this.mermaid_state.clear();
+            let parsed_markdown = this.parsed_markdown.clone();
+            this.mermaid_state.update(&parsed_markdown, cx);
+            cx.notify();
+            cx.refresh_windows();
+        })];
         let mut this = Self {
             source,
             selection: Selection::default(),
@@ -350,6 +362,7 @@ impl Markdown {
             fallback_code_block_language,
             options,
             mermaid_state: MermaidState::default(),
+            _subscriptions: subscriptions,
             copied_code_blocks: HashSet::default(),
             code_block_scroll_handles: BTreeMap::default(),
             context_menu_selected_text: None,
@@ -945,13 +958,16 @@ impl MarkdownElement {
         markdown_end: usize,
         line_height: Option<Pixels>,
     ) {
-        builder.push_div(
-            div()
-                .mb_2()
-                .when_some(line_height, |el, line_height| el.line_height(line_height)),
-            range,
-            markdown_end,
-        );
+        let mut paragraph = div();
+        if !self.style.height_is_multiple_of_line_height {
+            paragraph = paragraph.mb_2();
+        }
+        if let Some(line_height) = line_height {
+            paragraph = paragraph.line_height(line_height);
+        } else if !self.style.height_is_multiple_of_line_height {
+            paragraph = paragraph.line_height(rems(1.3));
+        }
+        builder.push_div(paragraph, range, markdown_end);
     }
 
     fn push_markdown_heading(
@@ -1438,7 +1454,7 @@ impl Element for MarkdownElement {
         let html_paragraph_line_height = if self.style.height_is_multiple_of_line_height {
             None
         } else {
-            Some(default_paragraph_line_height)
+            Some(rems(1.3).to_pixels(window.rem_size()))
         };
         let rendered_math_by_offset = if render_math {
             parsed_markdown
@@ -2462,22 +2478,6 @@ impl MarkdownElementBuilder {
         }]);
     }
 
-    fn push_inline_math(
-        &mut self,
-        source_range: Range<usize>,
-        math: RenderedMarkdownMath,
-        placeholder: String,
-    ) {
-        self.push_text_style(TextStyleRefinement {
-            color: Some(Hsla::transparent_black()),
-            ..Default::default()
-        });
-        self.push_text(&placeholder, source_range.clone());
-        self.pop_text_style();
-        self.inline_math
-            .push(RenderedInlineMath { source_range, math });
-    }
-
     fn push_list(&mut self, bullet_index: Option<u64>) {
         self.list_stack.push(ListStackEntry { bullet_index });
     }
@@ -2507,6 +2507,22 @@ impl MarkdownElementBuilder {
             source_range,
             destination_url,
         });
+    }
+
+    fn push_inline_math(
+        &mut self,
+        source_range: Range<usize>,
+        math: RenderedMarkdownMath,
+        placeholder: String,
+    ) {
+        self.push_text_style(TextStyleRefinement {
+            color: Some(Hsla::transparent_black()),
+            ..Default::default()
+        });
+        self.push_text(&placeholder, source_range.clone());
+        self.pop_text_style();
+        self.inline_math
+            .push(RenderedInlineMath { source_range, math });
     }
 
     fn push_text(&mut self, text: &str, source_range: Range<usize>) {
@@ -3402,22 +3418,6 @@ mod tests {
     fn test_math_renders_as_source_when_disabled(cx: &mut TestAppContext) {
         let rendered = render_markdown("inline $x^2$ math", cx);
         assert_eq!(rendered.text_for_range(0..17), "inline $x^2$ math");
-    }
-
-    #[gpui::test]
-    fn test_inline_math_stays_in_line_when_rendered(cx: &mut TestAppContext) {
-        let rendered = render_markdown_with_options(
-            "before $x^2$ after",
-            None,
-            MarkdownOptions {
-                render_math: true,
-                ..Default::default()
-            },
-            cx,
-        );
-
-        assert_eq!(rendered.lines.len(), 1);
-        assert_eq!(rendered.text_for_range(0..18), "before $x^2$ after");
     }
 
     #[track_caller]

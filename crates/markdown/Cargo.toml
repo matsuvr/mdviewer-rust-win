@@ -12,6 +12,11 @@ workspace = true
 path = "src/markdown.rs"
 doctest = false
 
+[[test]]
+name = "math_support"
+path = "tests/math_support.rs"
+required-features = ["test-support"]
+
 [features]
 test-support = [
     "gpui/test-support",
@@ -34,6 +39,7 @@ pulldown-cmark.workspace = true
 ratex-layout.workspace = true
 ratex-parser.workspace = true
 ratex-types.workspace = true
+serde_json.workspace = true
 settings.workspace = true
 stacksafe.workspace = true
 sum_tree.workspace = true

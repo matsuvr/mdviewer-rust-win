@@ -1,7 +1,5 @@
-use std::path::PathBuf;
-
-use clap::Parser;
 use gpui::{App, AppContext, KeyBinding, WindowOptions};
+use std::{env, path::PathBuf};
 use theme::{GlobalTheme, LoadThemes, ThemeRegistry};
 
 use crate::viewer::MarkdownViewer;
@@ -9,15 +7,17 @@ use crate::viewer::MarkdownViewer;
 pub const APP_TITLE: &str = "Markdown Viewer";
 const LIGHT_THEME_NAME: &str = "One Light";
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "markdown_viewer",
-    about = "Fast, read-only Markdown viewer for Windows x64"
-)]
+#[derive(Debug)]
 pub struct Args {
-    /// Markdown files to open.
-    #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
+}
+
+impl Args {
+    pub fn parse() -> Self {
+        Self {
+            paths: env::args_os().skip(1).map(PathBuf::from).collect(),
+        }
+    }
 }
 
 pub fn init(cx: &mut App) {

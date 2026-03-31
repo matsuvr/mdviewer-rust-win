@@ -6,8 +6,6 @@ compile_error!("markdown_viewer supports only Windows x64.");
 mod app;
 mod viewer;
 
-use clap::Parser;
-
 fn main() {
     let args = app::Args::parse();
     let paths = args.paths;

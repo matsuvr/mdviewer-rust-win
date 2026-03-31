@@ -505,7 +505,7 @@ pub enum MarkdownEvent {
     SubstitutedText(String),
     /// An inline code node.
     Code,
-    /// A KaTeX-style math node.
+    /// A math node.
     Math { display_mode: bool, content: String },
     /// An HTML node.
     Html,
@@ -796,6 +796,31 @@ mod tests {
     }
 
     #[test]
+    fn test_math_events_are_preserved() {
+        let inline = parse_markdown_with_options("inline $x^2$ math", false);
+        assert!(inline.events.iter().any(|(_, event)| {
+            matches!(
+                event,
+                MarkdownEvent::Math {
+                    display_mode: false,
+                    content,
+                } if content == "x^2"
+            )
+        }));
+
+        let display = parse_markdown_with_options("$$y = x^2$$", false);
+        assert!(display.events.iter().any(|(_, event)| {
+            matches!(
+                event,
+                MarkdownEvent::Math {
+                    display_mode: true,
+                    content,
+                } if content == "y = x^2"
+            )
+        }));
+    }
+
+    #[test]
     fn test_smart_punctuation() {
         assert_eq!(
             parse_markdown_with_options(
@@ -883,31 +908,6 @@ mod tests {
                 ..Default::default()
             }
         );
-    }
-
-    #[test]
-    fn test_math_events_are_preserved() {
-        let inline = parse_markdown_with_options("inline $x^2$ math", false);
-        assert!(inline.events.iter().any(|(_, event)| {
-            matches!(
-                event,
-                MarkdownEvent::Math {
-                    display_mode: false,
-                    content,
-                } if content == "x^2"
-            )
-        }));
-
-        let display = parse_markdown_with_options("$$y = x^2$$", false);
-        assert!(display.events.iter().any(|(_, event)| {
-            matches!(
-                event,
-                MarkdownEvent::Math {
-                    display_mode: true,
-                    content,
-                } if content == "y = x^2"
-            )
-        }));
     }
 
     #[test]

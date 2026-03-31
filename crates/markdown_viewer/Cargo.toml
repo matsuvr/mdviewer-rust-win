@@ -16,7 +16,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 assets.workspace = true
-clap.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 markdown.workspace = true
