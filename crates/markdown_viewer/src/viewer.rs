@@ -6,14 +6,16 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{
-    App, Context, Entity, ImageSource, Render, Resource, ScrollHandle, SharedString, SharedUri,
-    StatefulInteractiveElement, StyleRefinement, TextStyleRefinement, UnderlineStyle, Window,
-    WindowBackgroundAppearance,
+    App, Context, Entity, ExternalPaths, ImageSource, Render, Resource, ScrollHandle, SharedString,
+    SharedUri, StatefulInteractiveElement, StyleRefinement, TextStyleRefinement, UnderlineStyle,
+    Window, WindowBackgroundAppearance,
 };
 use markdown::{
     CodeBlockRenderer, HeadingLevelStyles, Markdown, MarkdownElement, MarkdownOptions,
     MarkdownStyle,
 };
+use settings::Settings as _;
+use theme_settings::ThemeSettings;
 use ui::{WithScrollbar, div, prelude::*};
 
 use crate::app::APP_TITLE;
@@ -129,6 +131,21 @@ impl MarkdownViewer {
         cx.notify();
     }
 
+    fn handle_external_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(path) = first_dropped_markdown_path(paths.paths()) {
+            self.open_path(path, window, cx);
+            return;
+        }
+
+        self.status_message = Some("Drop a Markdown file to open it.".to_string());
+        cx.notify();
+    }
+
     fn render_markdown(&self, window: &mut Window, cx: &mut Context<Self>) -> MarkdownElement {
         let base_directory = self.current_path.as_ref().and_then(|path| {
             path.parent()
@@ -170,6 +187,9 @@ impl Render for MarkdownViewer {
             .id("markdown-viewer")
             .size_full()
             .bg(cx.theme().colors().background)
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.handle_external_paths(paths, window, cx);
+            }))
             .child(
                 div()
                     .size_full()
@@ -222,9 +242,10 @@ fn viewer_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
     let mut base_text_style = window.text_style();
     base_text_style.color = cx.theme().colors().text;
 
-    let font_family = base_text_style.font_family.clone();
-    let font_fallbacks = base_text_style.font_fallbacks.clone();
-    let font_features = base_text_style.font_features.clone();
+    let theme_settings = ThemeSettings::get_global(cx);
+    let code_font_family = theme_settings.buffer_font.family.clone();
+    let code_font_fallbacks = theme_settings.buffer_font.fallbacks.clone();
+    let code_font_features = Some(theme_settings.buffer_font.features.clone());
     let colors = cx.theme().colors();
     let mut code_block = StyleRefinement::default()
         .bg(colors.editor_background)
@@ -234,9 +255,9 @@ fn viewer_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
         .p_3()
         .mb_3();
     code_block.text = TextStyleRefinement {
-        font_family: Some(font_family.clone()),
-        font_fallbacks: font_fallbacks.clone(),
-        font_features: Some(font_features.clone()),
+        font_family: Some(code_font_family.clone()),
+        font_fallbacks: code_font_fallbacks.clone(),
+        font_features: code_font_features.clone(),
         color: Some(colors.text),
         ..Default::default()
     };
@@ -274,9 +295,9 @@ fn viewer_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
         }),
         code_block,
         inline_code: TextStyleRefinement {
-            font_family: Some(font_family.clone()),
-            font_fallbacks: font_fallbacks.clone(),
-            font_features: Some(font_features.clone()),
+            font_family: Some(code_font_family),
+            font_fallbacks: code_font_fallbacks,
+            font_features: code_font_features,
             background_color: Some(colors.editor_foreground.opacity(0.06)),
             color: Some(colors.text),
             ..Default::default()
@@ -306,6 +327,23 @@ fn window_title_for(path: &Path) -> String {
         .map(|file_name| file_name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
     format!("{file_name} - {APP_TITLE}")
+}
+
+fn first_dropped_markdown_path(paths: &[PathBuf]) -> Option<PathBuf> {
+    paths
+        .iter()
+        .find(|path| has_markdown_extension(path))
+        .cloned()
+}
+
+fn has_markdown_extension(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        return false;
+    };
+
+    ["md", "markdown", "mdown", "mkd", "mkdn"]
+        .iter()
+        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
 }
 
 fn resolve_viewer_path(url: &str, base_directory: Option<&Path>) -> Option<PathBuf> {
@@ -394,12 +432,12 @@ fn is_external_reference(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::PathBuf};
 
     use anyhow::Result;
     use tempfile::TempDir;
 
-    use super::{is_external_reference, resolve_viewer_path};
+    use super::{first_dropped_markdown_path, is_external_reference, resolve_viewer_path};
 
     #[test]
     fn resolves_relative_preview_paths() -> Result<()> {
@@ -456,5 +494,29 @@ mod tests {
     fn treats_http_and_mailto_links_as_external() {
         assert!(is_external_reference("https://zed.dev"));
         assert!(is_external_reference("mailto:test@example.com"));
+    }
+
+    #[test]
+    fn selects_first_supported_markdown_path_from_drop() {
+        let paths = vec![
+            PathBuf::from(r"C:\docs\diagram.png"),
+            PathBuf::from(r"C:\docs\README.MD"),
+            PathBuf::from(r"C:\docs\guide.markdown"),
+        ];
+
+        assert_eq!(
+            first_dropped_markdown_path(&paths),
+            Some(PathBuf::from(r"C:\docs\README.MD"))
+        );
+    }
+
+    #[test]
+    fn ignores_non_markdown_paths_from_drop() {
+        let paths = vec![
+            PathBuf::from(r"C:\docs\diagram.png"),
+            PathBuf::from(r"C:\docs\archive.zip"),
+        ];
+
+        assert_eq!(first_dropped_markdown_path(&paths), None);
     }
 }

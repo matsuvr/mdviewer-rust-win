@@ -821,6 +821,33 @@ mod tests {
     }
 
     #[test]
+    fn test_math_events_are_preserved_inside_table_cells() {
+        let table = parse_markdown_with_options(
+            "\
+| Name | Formula |
+| ---- | ------- |
+| Energy | $E = mc^2$ |
+| Root | $\\sqrt{\\pi}$ |",
+            false,
+        );
+
+        let inline_math_contents = table
+            .events
+            .iter()
+            .filter_map(|(_, event)| match event {
+                MarkdownEvent::Math {
+                    display_mode: false,
+                    content,
+                } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(inline_math_contents.contains(&"E = mc^2"));
+        assert!(inline_math_contents.contains(&"\\sqrt{\\pi}"));
+    }
+
+    #[test]
     fn test_smart_punctuation() {
         assert_eq!(
             parse_markdown_with_options(
@@ -969,6 +996,39 @@ mod tests {
             "Table checkboxes should remain text, not task-list markers"
         );
         assert_eq!(checkbox_cells, vec!["[x]", "[ ]"]);
+    }
+
+    #[test]
+    fn test_escaped_pipe_remains_in_same_table_cell() {
+        let markdown = "\
+| Feature | Example |
+| ------- | ------- |
+| Escaped pipe | a \\| b |";
+        let parsed = parse_markdown_with_options(markdown, false);
+
+        let mut in_table = false;
+        let mut cell_texts = Vec::new();
+        let mut current_cell = String::new();
+
+        for (range, event) in &parsed.events {
+            match event {
+                Start(Table(_)) => in_table = true,
+                End(MarkdownTagEnd::Table) => in_table = false,
+                Start(TableCell) => current_cell.clear(),
+                End(MarkdownTagEnd::TableCell) => {
+                    if in_table {
+                        cell_texts.push(current_cell.clone());
+                    }
+                }
+                Text | SubstitutedText(_) if in_table => {
+                    current_cell.push_str(&markdown[range.clone()]);
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(cell_texts.len(), 4);
+        assert_eq!(cell_texts[3].trim(), "a | b");
     }
 
     #[test]

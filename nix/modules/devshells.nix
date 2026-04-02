@@ -67,6 +67,7 @@
               fontDirectories = [
                 "./assets/fonts/lilex"
                 "./assets/fonts/ibm-plex-sans"
+                "./assets/fonts/katex"
               ];
             };
             PROTOC = "${pkgs.protobuf}/bin/protoc";

@@ -220,6 +220,7 @@ let
           fontDirectories = [
             ../assets/fonts/lilex
             ../assets/fonts/ibm-plex-sans
+            ../assets/fonts/katex
           ];
         };
         ZED_UPDATE_EXPLANATION = "Zed has been installed using Nix. Auto-updates have thus been disabled.";

@@ -7,6 +7,7 @@ use resvg::tiny_skia::Pixmap;
 use smallvec::SmallVec;
 use std::{
     hash::Hash,
+    path::Path,
     sync::{Arc, LazyLock},
 };
 
@@ -77,6 +78,56 @@ fn select_emoji_font(
     None
 }
 
+fn is_embeddable_font_asset(path: &str) -> bool {
+    matches!(
+        Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase()),
+        Some(extension) if matches!(extension.as_str(), "ttf" | "otf")
+    )
+}
+
+fn load_embedded_fonts(
+    db: &mut usvg::fontdb::Database,
+    asset_source: &dyn AssetSource,
+) -> Result<usize> {
+    let mut loaded = 0;
+    for font_path in asset_source.list("fonts")? {
+        let path = font_path.as_ref();
+        if !is_embeddable_font_asset(path) {
+            continue;
+        }
+
+        let Some(bytes) = asset_source.load(path)? else {
+            log::warn!("SVG font asset was listed but could not be loaded: {path}");
+            continue;
+        };
+
+        db.load_font_data(bytes.into_owned());
+        loaded += 1;
+    }
+
+    Ok(loaded)
+}
+
+fn create_font_db(asset_source: &dyn AssetSource) -> Arc<usvg::fontdb::Database> {
+    let mut db = usvg::fontdb::Database::new();
+    db.load_system_fonts();
+
+    match load_embedded_fonts(&mut db, asset_source) {
+        Ok(loaded) if loaded > 0 => {
+            log::debug!("loaded {loaded} embedded SVG fonts");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            log::warn!("failed to load embedded SVG fonts: {error:#}");
+        }
+    }
+
+    Arc::new(db)
+}
+
 /// When rendering SVGs, we render them at twice the size to get a higher-quality result.
 pub const SMOOTH_SVG_SCALE_FACTOR: f32 = 2.;
 
@@ -105,23 +156,25 @@ pub enum SvgSize {
 impl SvgRenderer {
     /// Creates a new SVG renderer with the provided asset source.
     pub fn new(asset_source: Arc<dyn AssetSource>) -> Self {
-        static FONT_DB: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
-            let mut db = usvg::fontdb::Database::new();
-            db.load_system_fonts();
-            Arc::new(db)
-        });
+        let font_db = create_font_db(asset_source.as_ref());
         let default_font_resolver = usvg::FontResolver::default_font_selector();
+        let resolver_font_db = font_db.clone();
         let font_resolver = Box::new(
             move |font: &usvg::Font, db: &mut Arc<usvg::fontdb::Database>| {
                 if db.is_empty() {
-                    *db = FONT_DB.clone();
+                    *db = resolver_font_db.clone();
                 }
                 default_font_resolver(font, db)
             },
         );
         let default_fallback_selection = usvg::FontResolver::default_fallback_selector();
+        let fallback_font_db = font_db.clone();
         let fallback_selection = Box::new(
             move |ch: char, fonts: &[usvg::fontdb::ID], db: &mut Arc<usvg::fontdb::Database>| {
+                if db.is_empty() {
+                    *db = fallback_font_db.clone();
+                }
+
                 if is_emoji_presentation(ch) {
                     if let Some(id) = select_emoji_font(ch, fonts, db.as_ref(), EMOJI_FONT_FAMILIES)
                     {
@@ -232,10 +285,30 @@ impl SvgRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{borrow::Cow, collections::BTreeMap};
 
     const IBM_PLEX_REGULAR: &[u8] =
         include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
     const LILEX_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/lilex/Lilex-Regular.ttf");
+
+    struct TestAssetSource {
+        files: BTreeMap<&'static str, &'static [u8]>,
+    }
+
+    impl AssetSource for TestAssetSource {
+        fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+            Ok(self.files.get(path).copied().map(Cow::Borrowed))
+        }
+
+        fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+            Ok(self
+                .files
+                .keys()
+                .filter(|asset_path| asset_path.starts_with(path))
+                .map(|asset_path| (*asset_path).into())
+                .collect())
+        }
+    }
 
     #[test]
     fn test_is_emoji_presentation() {
@@ -296,5 +369,42 @@ mod tests {
         assert_eq!(selected, lilex);
         assert!(!font_has_char(&db, ibm_plex_sans, '│'));
         assert!(font_has_char(&db, selected, '│'));
+    }
+
+    #[test]
+    fn test_load_embedded_fonts_loads_ttf_assets() {
+        let asset_source = TestAssetSource {
+            files: BTreeMap::from([
+                (
+                    "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+                    IBM_PLEX_REGULAR as &[u8],
+                ),
+                ("fonts/lilex/Lilex-Regular.ttf", LILEX_REGULAR as &[u8]),
+                ("fonts/README.txt", b"ignore me" as &[u8]),
+            ]),
+        };
+        let mut db = usvg::fontdb::Database::new();
+
+        let loaded = load_embedded_fonts(&mut db, &asset_source).unwrap();
+
+        assert_eq!(loaded, 2);
+        assert!(
+            db.query(&usvg::fontdb::Query {
+                families: &[usvg::fontdb::Family::Name("IBM Plex Sans")],
+                weight: usvg::fontdb::Weight(400),
+                stretch: usvg::fontdb::Stretch::Normal,
+                style: usvg::fontdb::Style::Normal,
+            })
+            .is_some()
+        );
+        assert!(
+            db.query(&usvg::fontdb::Query {
+                families: &[usvg::fontdb::Family::Name("Lilex")],
+                weight: usvg::fontdb::Weight(400),
+                stretch: usvg::fontdb::Stretch::Normal,
+                style: usvg::fontdb::Style::Normal,
+            })
+            .is_some()
+        );
     }
 }

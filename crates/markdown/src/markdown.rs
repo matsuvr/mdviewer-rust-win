@@ -1443,6 +1443,9 @@ impl Element for MarkdownElement {
             .base_text_style
             .font_size
             .to_pixels(window.rem_size());
+        let base_font_id = window
+            .text_system()
+            .resolve_font(&self.style.base_text_style.font());
         let default_paragraph_line_height = if self.style.height_is_multiple_of_line_height {
             self.style
                 .base_text_style
@@ -1450,6 +1453,11 @@ impl Element for MarkdownElement {
                 .to_pixels(base_font_size.into(), window.rem_size())
         } else {
             rems(1.3).to_pixels(window.rem_size())
+        };
+        let paragraph_text_metrics = ParagraphTextMetrics {
+            default_line_height: default_paragraph_line_height,
+            font_ascent: window.text_system().ascent(base_font_id, base_font_size),
+            font_descent: window.text_system().descent(base_font_id, base_font_size),
         };
         let html_paragraph_line_height = if self.style.height_is_multiple_of_line_height {
             None
@@ -1539,7 +1547,7 @@ impl Element for MarkdownElement {
                             paragraph_line_height(
                                 range,
                                 &rendered_math_by_offset,
-                                default_paragraph_line_height,
+                                paragraph_text_metrics,
                                 !self.style.height_is_multiple_of_line_height,
                             ),
                         ),
@@ -1781,14 +1789,24 @@ impl Element for MarkdownElement {
                             let is_header = builder.table.in_head;
                             let row_index = builder.table.row_index;
                             let col_index = builder.table.col_index;
+                            let line_height = paragraph_line_height(
+                                range,
+                                &rendered_math_by_offset,
+                                paragraph_text_metrics,
+                                !self.style.height_is_multiple_of_line_height,
+                            );
 
                             builder.push_div(
                                 div()
+                                    .min_w_0()
                                     .when(col_index > 0, |this| this.border_l_1())
                                     .when(row_index > 0, |this| this.border_t_1())
                                     .border_color(cx.theme().colors().border)
                                     .px_1()
                                     .py_0p5()
+                                    .when_some(line_height, |this, line_height| {
+                                        this.line_height(line_height)
+                                    })
                                     .when(is_header, |this| {
                                         this.bg(cx.theme().colors().title_bar_background)
                                     })
@@ -2080,10 +2098,10 @@ impl Element for MarkdownElement {
 fn paragraph_line_height(
     range: &Range<usize>,
     rendered_math_by_offset: &BTreeMap<usize, RenderedMarkdownMath>,
-    default_line_height: Pixels,
+    text_metrics: ParagraphTextMetrics,
     always_set_line_height: bool,
 ) -> Option<Pixels> {
-    let mut line_height = default_line_height;
+    let mut line_height = text_metrics.default_line_height;
     let mut needs_override = false;
 
     for (_, rendered_math) in rendered_math_by_offset.range(range.start..range.end) {
@@ -2091,8 +2109,9 @@ fn paragraph_line_height(
             continue;
         }
 
-        if rendered_math.height > line_height {
-            line_height = rendered_math.height;
+        let required_line_height = inline_math_line_height(rendered_math, text_metrics);
+        if required_line_height > line_height {
+            line_height = required_line_height;
             needs_override = true;
         }
     }
@@ -2101,6 +2120,54 @@ fn paragraph_line_height(
         Some(line_height)
     } else {
         None
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ParagraphTextMetrics {
+    default_line_height: Pixels,
+    font_ascent: Pixels,
+    font_descent: Pixels,
+}
+
+fn inline_math_line_height(
+    rendered_math: &RenderedMarkdownMath,
+    text_metrics: ParagraphTextMetrics,
+) -> Pixels {
+    inline_math_line_height_for_metrics(
+        rendered_math.baseline_from_top,
+        rendered_math.height,
+        text_metrics,
+    )
+}
+
+fn inline_math_line_height_for_metrics(
+    math_ascent: Pixels,
+    math_height: Pixels,
+    text_metrics: ParagraphTextMetrics,
+) -> Pixels {
+    let text_metrics_height = text_metrics.font_ascent + text_metrics.font_descent;
+    let math_descent = math_height - math_ascent;
+    let required_for_ascent = if math_ascent > text_metrics.font_ascent {
+        text_metrics_height + (math_ascent - text_metrics.font_ascent) * 2.
+    } else {
+        text_metrics_height
+    };
+    let required_for_descent = if math_descent > text_metrics.font_descent {
+        text_metrics_height + (math_descent - text_metrics.font_descent) * 2.
+    } else {
+        text_metrics_height
+    };
+    let required_line_height = if required_for_ascent > required_for_descent {
+        required_for_ascent
+    } else {
+        required_for_descent
+    };
+
+    if required_line_height > text_metrics.default_line_height {
+        required_line_height
+    } else {
+        text_metrics.default_line_height
     }
 }
 
@@ -2125,13 +2192,19 @@ fn inline_math_placeholder(width: Pixels, text_style: &TextStyle, window: &Windo
             window.text_system().layout_width(font_id, font_size, '.'),
         ),
     ];
+    let fallback_character = candidates
+        .iter()
+        .rev()
+        .find(|(_, candidate_width)| *candidate_width > Pixels::ZERO)
+        .map(|(character, _)| *character)
+        .unwrap_or('i');
 
     let mut remaining = width;
     let mut placeholder = String::new();
 
     while remaining > Pixels::ZERO {
         let mut chosen = candidates.last().copied().unwrap();
-        for candidate in candidates {
+        for candidate in candidates.iter().copied() {
             if candidate.1 <= remaining {
                 chosen = candidate;
                 break;
@@ -2149,7 +2222,29 @@ fn inline_math_placeholder(width: Pixels, text_style: &TextStyle, window: &Windo
         placeholder.push('i');
     }
 
+    while placeholder_width(&placeholder, text_style, window) < width {
+        placeholder.push(fallback_character);
+    }
+
     placeholder
+}
+
+fn placeholder_width(placeholder: &str, text_style: &TextStyle, window: &Window) -> Pixels {
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let layout = window.text_system().layout_line(
+        placeholder,
+        font_size,
+        &[TextRun {
+            len: placeholder.len(),
+            font: text_style.font(),
+            color: Hsla::transparent_black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    layout.width
 }
 
 fn apply_heading_style(
@@ -3418,6 +3513,46 @@ mod tests {
     fn test_math_renders_as_source_when_disabled(cx: &mut TestAppContext) {
         let rendered = render_markdown("inline $x^2$ math", cx);
         assert_eq!(rendered.text_for_range(0..17), "inline $x^2$ math");
+    }
+
+    #[test]
+    fn test_inline_math_line_height_preserves_baseline_clearance() {
+        let text_metrics = ParagraphTextMetrics {
+            default_line_height: px(16.0),
+            font_ascent: px(10.0),
+            font_descent: px(3.0),
+        };
+        let line_height = inline_math_line_height_for_metrics(px(12.0), px(22.0), text_metrics);
+
+        assert_eq!(line_height, px(27.0));
+    }
+
+    #[gpui::test]
+    fn test_inline_math_placeholder_meets_requested_width(cx: &mut TestAppContext) {
+        struct TestWindow;
+
+        impl Render for TestWindow {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        ensure_theme_initialized(cx);
+
+        let (_, cx) = cx.add_window_view(|_, _| TestWindow);
+        cx.draw(
+            Default::default(),
+            size(px(600.0), px(600.0)),
+            |window, _cx| {
+                let text_style = window.text_style();
+                let requested_width = px(96.0);
+                let placeholder = inline_math_placeholder(requested_width, &text_style, window);
+
+                assert!(placeholder_width(&placeholder, &text_style, window) >= requested_width);
+
+                div()
+            },
+        );
     }
 
     #[track_caller]

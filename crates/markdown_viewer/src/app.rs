@@ -26,7 +26,7 @@ pub fn init(cx: &mut App) {
     assets::Assets
         .load_fonts(cx)
         .expect("failed to load bundled fonts");
-    cx.bind_keys([KeyBinding::new("cmd-c", markdown::Copy, None)]);
+    bind_viewer_key_bindings(cx);
     force_light_theme(cx);
 }
 
@@ -50,6 +50,10 @@ fn open_window(path: Option<PathBuf>, cx: &mut App) {
     .expect("failed to open markdown viewer window");
 }
 
+fn bind_viewer_key_bindings(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("secondary-c", markdown::Copy, None)]);
+}
+
 fn force_light_theme(cx: &mut App) {
     let registry = ThemeRegistry::global(cx);
     let theme = registry
@@ -61,4 +65,31 @@ fn force_light_theme(cx: &mut App) {
 
     GlobalTheme::update_theme(cx, theme);
     GlobalTheme::update_icon_theme(cx, icon_theme);
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Keystroke, TestAppContext};
+
+    use super::bind_viewer_key_bindings;
+
+    #[gpui::test]
+    fn binds_ctrl_c_to_markdown_copy_action(cx: &mut TestAppContext) {
+        cx.update(bind_viewer_key_bindings);
+
+        let ctrl_c_bindings = cx.read(|app: &gpui::App| {
+            app.all_bindings_for_input(&[Keystroke::parse("ctrl-c").unwrap()])
+        });
+        assert_eq!(ctrl_c_bindings.len(), 1);
+        assert_eq!(ctrl_c_bindings[0].action().name(), "markdown::Copy");
+        assert_eq!(
+            ctrl_c_bindings[0].keystrokes()[0].inner().unparse(),
+            "ctrl-c"
+        );
+
+        let windows_key_c_bindings = cx.read(|app: &gpui::App| {
+            app.all_bindings_for_input(&[Keystroke::parse("cmd-c").unwrap()])
+        });
+        assert!(windows_key_c_bindings.is_empty());
+    }
 }

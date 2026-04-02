@@ -118,3 +118,37 @@ fn render_math_enabled_hides_raw_inline_delimiters(cx: &mut TestAppContext) {
     );
     assert!(!rendered.contains("$x^2$"));
 }
+
+#[gpui::test]
+fn render_math_enabled_hides_raw_inline_delimiters_inside_tables(cx: &mut TestAppContext) {
+    let rendered = render_markdown_text(
+        "\
+| Name | Formula |
+| ---- | ------- |
+| Energy | $E = mc^2$ |
+| Root | $\\sqrt{\\pi}$ |",
+        MarkdownOptions {
+            render_math: true,
+            ..Default::default()
+        },
+        cx,
+    );
+
+    assert!(!rendered.contains("$E = mc^2$"));
+    assert!(!rendered.contains("$\\sqrt{\\pi}$"));
+}
+
+#[gpui::test]
+fn escaped_pipe_renders_as_literal_pipe_inside_tables(cx: &mut TestAppContext) {
+    let rendered = render_markdown_text(
+        "\
+| Feature | Example |
+| ------- | ------- |
+| Escaped pipe | a \\| b |",
+        MarkdownOptions::default(),
+        cx,
+    );
+
+    assert!(rendered.contains("a | b"));
+    assert!(!rendered.contains("a \\| b"));
+}
